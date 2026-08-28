@@ -11,29 +11,37 @@ import pymupdf
 from PIL import Image, ImageStat
 import unicodedata
 
+try:
+    import pytesseract
+    # Configure path to Tesseract binary
+    if os.path.exists("/opt/anaconda3/bin/tesseract"):
+        pytesseract.pytesseract.tesseract_cmd = "/opt/anaconda3/bin/tesseract"
+    elif os.path.exists("/usr/local/bin/tesseract"):
+        pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
+    elif os.path.exists("/opt/homebrew/bin/tesseract"):
+        pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
+    HAS_PYTESSERACT = True
+except ImportError:
+    HAS_PYTESSERACT = False
+
 # ==============================================================================
-# 🎯 1. SET YOUR TARGET URL / SPECIFIC FILE HERE (កន្លែងកំណត់ LINK / FILE ជាក់លាក់)
+# 🎯 1. SET YOUR TARGET URL / SPECIFIC FILE HERE
 # ==============================================================================
 
 # Option A: Paste a single specific detail URL link to test directly:
-# Example: TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
-# Leave as "" if you want to crawl automatically.
-TARGET_URL = ""
+TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
 
 # Option B: Put specific document IDs to test (e.g. [17235, 17236]):
-# Leave as [] if you want to crawl automatically.
 SPECIFIC_IDS = []
 
 # Option C: Crawl starting from Main Website Homepage
 MAIN_URL = "https://library.ncdd.gov.kh/"
 
 # Run Mode when crawling from MAIN_URL:
-#   - TEST_MODE = True  : Process up to TEST_LIMIT documents (e.g. 1 or 5)
-#   - TEST_MODE = False : Full Run across all documents on the website
 TEST_MODE = True
 TEST_LIMIT = 5
 
-# Gemini API Key (Optional: used for Vision OCR on scanned images)
+# Gemini API Key (Optional: if not set, automatically uses free local Khmer OCR)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 
 # ==============================================================================
@@ -258,6 +266,10 @@ def download_pdf_file(pdf_url, save_path):
     except Exception as e:
         return False
 
+# ==============================================================================
+# OCR ENGINES (GEMINI FLASH VISION & LOCAL TESSERACT KHMER)
+# ==============================================================================
+
 def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
     if not client:
         return ""
@@ -293,6 +305,21 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
 
     return ""
 
+def extract_text_via_local_ocr(pil_image):
+    """Fallback local Khmer OCR using Tesseract (100% Free, no API keys needed)."""
+    if not HAS_PYTESSERACT:
+        return ""
+    try:
+        text = pytesseract.image_to_string(pil_image, lang="khm")
+        return text.strip()
+    except Exception as e:
+        print(f"      [WARN] Local OCR error: {e}")
+        return ""
+
+# ==============================================================================
+# PROCESS DOCUMENT AND SAVE
+# ==============================================================================
+
 def process_pdf_document(pdf_path, doc_info):
     doc_id = doc_info["id"]
     output_txt_path = os.path.join(EXTRACTED_DIR, f"{doc_id}.txt")
@@ -313,7 +340,7 @@ def process_pdf_document(pdf_path, doc_info):
         page_num = page_idx + 1
         page = pdf_doc[page_idx]
 
-        # 1. Extract and clean digital text
+        # 1. Check for digital selectable text
         raw_text = page.get_text().strip()
         cleaned_text = clean_khmer_text(raw_text)
         khmer_chars = [c for c in cleaned_text if c in ALL_KHMER_CHARS]
@@ -324,7 +351,7 @@ def process_pdf_document(pdf_path, doc_info):
             continue
 
         # 2. Render page to image
-        pix = page.get_pixmap(dpi=150)
+        pix = page.get_pixmap(dpi=200)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
         # 3. Check for blank page
@@ -332,17 +359,24 @@ def process_pdf_document(pdf_path, doc_info):
             print(f"      [BLANK] [Page {page_num}/{total_pages}] Blank page -> Skipped.")
             continue
 
-        # 4. OCR fallback
+        # 4. OCR Processing: Gemini Vision if key provided, otherwise Local Tesseract Khmer OCR
+        ocr_text = ""
         if client:
-            print(f"      [OCR] [Page {page_num}/{total_pages}] Scanned image -> Transcribing with Gemini Flash...")
+            print(f"      [GEMINI OCR] [Page {page_num}/{total_pages}] Transcribing with Gemini Flash...")
             ocr_text = extract_text_via_gemini(img, doc_id, page_num, max_retries=2)
-            if ocr_text:
-                extracted_pages.append(clean_khmer_text(ocr_text))
-                print(f"      [SUCCESS] [Page {page_num}/{total_pages}] Clean text extracted ({len(ocr_text)} chars).")
-        else:
-            print(f"      [SKIP] [Page {page_num}/{total_pages}] Scanned image (Gemini API key not set).")
         
-        time.sleep(1)
+        if not ocr_text and HAS_PYTESSERACT:
+            print(f"      [LOCAL OCR] [Page {page_num}/{total_pages}] Transcribing with Local Khmer OCR...")
+            ocr_text = extract_text_via_local_ocr(img)
+
+        if ocr_text:
+            cleaned_ocr = clean_khmer_text(ocr_text)
+            extracted_pages.append(cleaned_ocr)
+            print(f"      [SUCCESS] [Page {page_num}/{total_pages}] Clean text extracted ({len(cleaned_ocr)} chars).")
+        else:
+            print(f"      [WARN] [Page {page_num}/{total_pages}] No OCR text found.")
+        
+        time.sleep(0.5)
 
     pdf_doc.close()
 
@@ -372,6 +406,10 @@ def process_pdf_document(pdf_path, doc_info):
         mark_id_processed(doc_id)
         return False
 
+# ==============================================================================
+# MAIN PIPELINE CONTROLLER
+# ==============================================================================
+
 def main():
     print("=" * 75)
     print("KHMER LLM DATA INGESTION PIPELINE (NCDD LIBRARY)")
@@ -380,11 +418,11 @@ def main():
     processed_ids = load_processed_ids()
     print(f"[CHECKPOINT] Previously processed documents: {len(processed_ids)}")
 
-    # 1. Check if a single target URL is provided
+    # 1. Single target URL provided
     if TARGET_URL and TARGET_URL.strip():
         print(f"[TARGET URL] Processing single target link: {TARGET_URL}")
         target_links = [TARGET_URL.strip()]
-    # 2. Check if specific IDs are configured
+    # 2. Specific IDs configured
     elif SPECIFIC_IDS:
         print(f"[TARGET IDS] Processing {len(SPECIFIC_IDS)} specific document IDs: {SPECIFIC_IDS}")
         target_links = [f"https://library.ncdd.gov.kh/detail/{doc_id}" for doc_id in SPECIFIC_IDS]
