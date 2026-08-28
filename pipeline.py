@@ -12,22 +12,58 @@ from PIL import Image, ImageStat
 import unicodedata
 
 # ==============================================================================
+# COMPLETE KHMER UNICODE CHARACTER SET & INDICES (U+1780 - U+17FF)
+# ==============================================================================
+
+# 1. Khmer Consonants (33 letters: U+1780 - U+17A2)
+KHMER_CONSONANTS = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
+
+# 2. Khmer Independent Vowels (U+17A3 - U+17B3)
+KHMER_INDEPENDENT_VOWELS = "ឣឤឥឦឧឨឩឪឫឬឭឮឯឰឱឲឳ"
+
+# 3. Khmer Dependent Vowel Signs (U+17B6 - U+17C5)
+KHMER_DEPENDENT_VOWELS = "ាិីឹឺុូួើឿៀេែៃោៅ"
+
+# 4. Khmer Diacritics & Signs (U+17C6 - U+17D3)
+KHMER_DIACRITICS = [
+    "\u17c6",  # Nikkahit (ំ)
+    "\u17c7",  # Reahmukh (ះ)
+    "\u17c8",  # Yuukaleapintu (ៈ)
+    "\u17c9",  # Muusikoatoan (៉)
+    "\u17ca",  # Triisap (៊)
+    "\u17cb",  # Bantoc (់)
+    "\u17cc",  # Robat (៌)
+    "\u17cd",  # Toandakhiat (៍)
+    "\u17ce",  # Kakabat (៎)
+    "\u17cf",  # Ahsda (៏)
+    "\u17d0",  # Samyok Sannya (័)
+    "\u17d1",  # Viriam (៑)
+    "\u17d2",  # Sign Coeng (្)
+    "\u17d3",  # Bathamasat (៓)
+]
+
+# 5. Khmer Digits (0 - 9: U+17E0 - U+17E9)
+KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
+
+# 6. Khmer Punctuation & Symbols
+KHMER_SYMBOLS = "។៕៛ៗ៙៚៖៘"
+
+# All Valid Khmer Characters
+ALL_KHMER_CHARS = KHMER_CONSONANTS + KHMER_INDEPENDENT_VOWELS + KHMER_DEPENDENT_VOWELS + "".join(KHMER_DIACRITICS) + KHMER_DIGITS + KHMER_SYMBOLS
+
+# Legacy non-Unicode shadow/font artifact glyphs to strip
+LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ\"\'`~^|\\<>ù\ufffd")
+
+# ==============================================================================
 # CONFIGURATION
-# ==============================================================================ខ
+# ==============================================================================
 
-# 1. Main Website Entry URL
 MAIN_URL = "https://library.ncdd.gov.kh/"
-
-# 2. Gemini API Key (Optional: used when Vision OCR is required)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 
-# 3. Run Mode:
-#    - TEST_MODE = True  : Crawls and processes up to 5 documents from the main URL
-#    - TEST_MODE = False : Crawls and processes all documents across all categories
 TEST_MODE = True
 TEST_LIMIT = 5
 
-# 4. Directory Structure
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 EXTRACTED_DIR = os.path.join(BASE_DIR, "extracted_texts")
@@ -37,7 +73,6 @@ ERROR_LOG_FILE = os.path.join(BASE_DIR, "skipped_errors.log")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(EXTRACTED_DIR, exist_ok=True)
 
-# 5. OCR Extraction Prompt for Gemini Flash
 GEMINI_OCR_PROMPT = """Extract all the Khmer text from this document image accurately.
 - Preserve all titles, articles (មាត្រា), bullet points, and tables in clean Markdown.
 - Fix broken Khmer unicode characters and subscripts.
@@ -63,48 +98,35 @@ if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY_HERE":
         print(f"[WARN] Failed to initialize Google GenAI client: {e}")
 
 # ==============================================================================
-# KHMER UNICODE NORMALIZER & CLEANER
+# COMPREHENSIVE KHMER UNICODE NORMALIZER & CLEANER
 # ==============================================================================
 
 def clean_khmer_text(text):
-    """
-    Cleans font artifacts, double-bold characters, and non-standard Khmer encodings.
-    """
     if not text:
         return ""
 
-    text = text.replace("\ufffd", "")
-    
-    # Remove Latin-1 font shadow artifact characters injected by PDF export engines
-    junk_chars = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ\"\'`~^|\\<>ù")
-    cleaned = [ch for ch in text if ch not in junk_chars]
+    # 1. Remove font shadow/artifact characters
+    cleaned = [ch for ch in text if ch not in LEGACY_JUNK_CHARS]
     res = "".join(cleaned)
 
-    # 1. Deduplicate consecutive identical Khmer vowel signs & diacritics
-    khmer_diacritics = [
-        "\u17b6", "\u17b7", "\u17b8", "\u17b9", "\u17ba", "\u17bb", "\u17bc", "\u17bd",
-        "\u17be", "\u17bf", "\u17c0", "\u17c1", "\u17c2", "\u17c3", "\u17c4", "\u17c5",
-        "\u17c6", "\u17c7", "\u17c8", "\u17c9", "\u17ca", "\u17cb", "\u17cc", "\u17cd",
-        "\u17ce", "\u17cf", "\u17d0", "\u17d1", "\u17d3"
-    ]
-    for d in khmer_diacritics:
+    # 2. Deduplicate repeated vowel signs & diacritics
+    all_vowels_and_signs = list(KHMER_DEPENDENT_VOWELS) + KHMER_DIACRITICS
+    for d in all_vowels_and_signs:
         res = re.sub(f"{d}+", d, res)
 
-    # 2. Deduplicate double Khmer consonants caused by PDF bold rendering
-    khmer_consonants = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
-    for c in khmer_consonants:
+    # 3. Deduplicate double Khmer consonants (PDF bold artifact)
+    for c in KHMER_CONSONANTS:
         res = re.sub(f"(?<!\u17d2){c}{{2,}}", c, res)
 
-    # 3. Deduplicate Coeng \u17d2
+    # 4. Deduplicate Coeng
     res = re.sub(r"\u17d2+", "\u17d2", res)
 
-    # 4. Clean consecutive spaces and newlines
+    # 5. Normalize spaces and newlines
     res = re.sub(r"[ ]{2,}", " ", res)
     res = re.sub(r"\n{3,}", "\n\n", res)
     
-    # 5. Unicode NFC normalization
-    res = unicodedata.normalize("NFC", res)
-    return res.strip()
+    # 6. Unicode NFC standard
+    return unicodedata.normalize("NFC", res).strip()
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -141,7 +163,7 @@ def is_page_blank(pil_image, threshold=4.5):
         return False
 
 # ==============================================================================
-# STEP 1: CRAWL MAIN WEBSITE TO DISCOVER ALL CATEGORIES & DOCUMENTS
+# CRAWLER & DOWNLOADER
 # ==============================================================================
 
 def discover_document_links(main_url, limit=None):
@@ -189,10 +211,6 @@ def discover_document_links(main_url, limit=None):
 
     ordered_links = sorted(list(detail_links), key=lambda x: [int(s) for s in re.findall(r'\d+', x)] or [0], reverse=True)
     return ordered_links[:limit] if limit else ordered_links
-
-# ==============================================================================
-# STEP 2: SCRAPE METADATA & DOWNLOAD PDF
-# ==============================================================================
 
 def fetch_document_info(detail_url):
     id_match = re.search(r"/detail/(\d+)", detail_url)
@@ -254,10 +272,6 @@ def download_pdf_file(pdf_url, save_path):
     except Exception as e:
         return False
 
-# ==============================================================================
-# STEP 3: GEMINI OCR FALLBACK
-# ==============================================================================
-
 def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
     if not client:
         return ""
@@ -293,10 +307,6 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
 
     return ""
 
-# ==============================================================================
-# STEP 4: SMART HYBRID PDF EXTRACTION WITH AUTOMATIC NORMALIZER
-# ==============================================================================
-
 def process_pdf_document(pdf_path, doc_info):
     doc_id = doc_info["id"]
     output_txt_path = os.path.join(EXTRACTED_DIR, f"{doc_id}.txt")
@@ -317,10 +327,10 @@ def process_pdf_document(pdf_path, doc_info):
         page_num = page_idx + 1
         page = pdf_doc[page_idx]
 
-        # 1. Try extracting and cleaning digital text
+        # 1. Extract and clean digital text
         raw_text = page.get_text().strip()
         cleaned_text = clean_khmer_text(raw_text)
-        khmer_chars = [c for c in cleaned_text if '\u1780' <= c <= '\u17FF']
+        khmer_chars = [c for c in cleaned_text if c in ALL_KHMER_CHARS]
 
         if len(khmer_chars) >= 25:
             print(f"      [DIRECT CLEAN] [Page {page_num}/{total_pages}] Extracted & normalized clean Khmer text ({len(khmer_chars)} chars).")
@@ -341,7 +351,7 @@ def process_pdf_document(pdf_path, doc_info):
             print(f"      [OCR] [Page {page_num}/{total_pages}] Scanned image -> Transcribing with Gemini Flash...")
             ocr_text = extract_text_via_gemini(img, doc_id, page_num, max_retries=2)
             if ocr_text:
-                extracted_pages.append(ocr_text)
+                extracted_pages.append(clean_khmer_text(ocr_text))
                 print(f"      [SUCCESS] [Page {page_num}/{total_pages}] Clean text extracted ({len(ocr_text)} chars).")
         else:
             print(f"      [SKIP] [Page {page_num}/{total_pages}] Scanned image (Gemini API key not set).")
@@ -350,7 +360,6 @@ def process_pdf_document(pdf_path, doc_info):
 
     pdf_doc.close()
 
-    # Save to individual extracted_texts/{doc_id}.txt
     if extracted_pages:
         combined_text = "\n\n".join(extracted_pages)
         
@@ -376,10 +385,6 @@ def process_pdf_document(pdf_path, doc_info):
         print(f"   [WARN] No text extracted for ID {doc_id}")
         mark_id_processed(doc_id)
         return False
-
-# ==============================================================================
-# MAIN PIPELINE CONTROLLER
-# ==============================================================================
 
 def main():
     print("=" * 75)
