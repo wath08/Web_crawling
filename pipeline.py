@@ -12,57 +12,33 @@ from PIL import Image, ImageStat
 import unicodedata
 
 # ==============================================================================
-# COMPLETE KHMER UNICODE CHARACTER SET & INDICES (U+1780 - U+17FF)
+# 🎯 1. SET YOUR TARGET URL / SPECIFIC FILE HERE (កន្លែងកំណត់ LINK / FILE ជាក់លាក់)
 # ==============================================================================
 
-# 1. Khmer Consonants (33 letters: U+1780 - U+17A2)
-KHMER_CONSONANTS = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
+# Option A: Paste a single specific detail URL link to test directly:
+# Example: TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
+# Leave as "" if you want to crawl automatically.
+TARGET_URL = ""
 
-# 2. Khmer Independent Vowels (U+17A3 - U+17B3)
-KHMER_INDEPENDENT_VOWELS = "ឣឤឥឦឧឨឩឪឫឬឭឮឯឰឱឲឳ"
+# Option B: Put specific document IDs to test (e.g. [17235, 17236]):
+# Leave as [] if you want to crawl automatically.
+SPECIFIC_IDS = []
 
-# 3. Khmer Dependent Vowel Signs (U+17B6 - U+17C5)
-KHMER_DEPENDENT_VOWELS = "ាិីឹឺុូួើឿៀេែៃោៅ"
-
-# 4. Khmer Diacritics & Signs (U+17C6 - U+17D3)
-KHMER_DIACRITICS = [
-    "\u17c6",  # Nikkahit (ំ)
-    "\u17c7",  # Reahmukh (ះ)
-    "\u17c8",  # Yuukaleapintu (ៈ)
-    "\u17c9",  # Muusikoatoan (៉)
-    "\u17ca",  # Triisap (៊)
-    "\u17cb",  # Bantoc (់)
-    "\u17cc",  # Robat (៌)
-    "\u17cd",  # Toandakhiat (៍)
-    "\u17ce",  # Kakabat (៎)
-    "\u17cf",  # Ahsda (៏)
-    "\u17d0",  # Samyok Sannya (័)
-    "\u17d1",  # Viriam (៑)
-    "\u17d2",  # Sign Coeng (្)
-    "\u17d3",  # Bathamasat (៓)
-]
-
-# 5. Khmer Digits (0 - 9: U+17E0 - U+17E9)
-KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
-
-# 6. Khmer Punctuation & Symbols
-KHMER_SYMBOLS = "។៕៛ៗ៙៚៖៘"
-
-# All Valid Khmer Characters
-ALL_KHMER_CHARS = KHMER_CONSONANTS + KHMER_INDEPENDENT_VOWELS + KHMER_DEPENDENT_VOWELS + "".join(KHMER_DIACRITICS) + KHMER_DIGITS + KHMER_SYMBOLS
-
-# Legacy non-Unicode shadow/font artifact glyphs to strip
-LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ\"\'`~^|\\<>ù\ufffd")
-
-# ==============================================================================
-# CONFIGURATION
-# ==============================================================================
-
+# Option C: Crawl starting from Main Website Homepage
 MAIN_URL = "https://library.ncdd.gov.kh/"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 
+# Run Mode when crawling from MAIN_URL:
+#   - TEST_MODE = True  : Process up to TEST_LIMIT documents (e.g. 1 or 5)
+#   - TEST_MODE = False : Full Run across all documents on the website
 TEST_MODE = True
 TEST_LIMIT = 5
+
+# Gemini API Key (Optional: used for Vision OCR on scanned images)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+
+# ==============================================================================
+# DIRECTORY SETTINGS
+# ==============================================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
@@ -72,6 +48,23 @@ ERROR_LOG_FILE = os.path.join(BASE_DIR, "skipped_errors.log")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(EXTRACTED_DIR, exist_ok=True)
+
+# ==============================================================================
+# COMPLETE KHMER UNICODE CHARACTER SET & INDICES (U+1780 - U+17FF)
+# ==============================================================================
+
+KHMER_CONSONANTS = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
+KHMER_INDEPENDENT_VOWELS = "ឣឤឥឦឧឨឩឪឫឬឭឮឯឰឱឲឳ"
+KHMER_DEPENDENT_VOWELS = "ាិីឹឺុូួើឿៀេែៃោៅ"
+KHMER_DIACRITICS = [
+    "\u17c6", "\u17c7", "\u17c8", "\u17c9", "\u17ca", "\u17cb",
+    "\u17cc", "\u17cd", "\u17ce", "\u17cf", "\u17d0", "\u17d1",
+    "\u17d2", "\u17d3"
+]
+KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
+KHMER_SYMBOLS = "។៕៛ៗ៙៚៖៘"
+ALL_KHMER_CHARS = KHMER_CONSONANTS + KHMER_INDEPENDENT_VOWELS + KHMER_DEPENDENT_VOWELS + "".join(KHMER_DIACRITICS) + KHMER_DIGITS + KHMER_SYMBOLS
+LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ\"\'`~^|\\<>ù\ufffd")
 
 GEMINI_OCR_PROMPT = """Extract all the Khmer text from this document image accurately.
 - Preserve all titles, articles (មាត្រា), bullet points, and tables in clean Markdown.
@@ -105,27 +98,20 @@ def clean_khmer_text(text):
     if not text:
         return ""
 
-    # 1. Remove font shadow/artifact characters
     cleaned = [ch for ch in text if ch not in LEGACY_JUNK_CHARS]
     res = "".join(cleaned)
 
-    # 2. Deduplicate repeated vowel signs & diacritics
     all_vowels_and_signs = list(KHMER_DEPENDENT_VOWELS) + KHMER_DIACRITICS
     for d in all_vowels_and_signs:
         res = re.sub(f"{d}+", d, res)
 
-    # 3. Deduplicate double Khmer consonants (PDF bold artifact)
     for c in KHMER_CONSONANTS:
         res = re.sub(f"(?<!\u17d2){c}{{2,}}", c, res)
 
-    # 4. Deduplicate Coeng
     res = re.sub(r"\u17d2+", "\u17d2", res)
-
-    # 5. Normalize spaces and newlines
     res = re.sub(r"[ ]{2,}", " ", res)
     res = re.sub(r"\n{3,}", "\n\n", res)
     
-    # 6. Unicode NFC standard
     return unicodedata.normalize("NFC", res).strip()
 
 # ==============================================================================
@@ -389,24 +375,32 @@ def process_pdf_document(pdf_path, doc_info):
 def main():
     print("=" * 75)
     print("KHMER LLM DATA INGESTION PIPELINE (NCDD LIBRARY)")
-    print(f"Target Main Website: {MAIN_URL}")
     print("=" * 75)
 
     processed_ids = load_processed_ids()
     print(f"[CHECKPOINT] Previously processed documents: {len(processed_ids)}")
 
-    limit = TEST_LIMIT if TEST_MODE else None
-    print(f"[START] Discovering documents starting from {MAIN_URL}...")
-    document_links = discover_document_links(MAIN_URL, limit=limit)
+    # 1. Check if a single target URL is provided
+    if TARGET_URL and TARGET_URL.strip():
+        print(f"[TARGET URL] Processing single target link: {TARGET_URL}")
+        target_links = [TARGET_URL.strip()]
+    # 2. Check if specific IDs are configured
+    elif SPECIFIC_IDS:
+        print(f"[TARGET IDS] Processing {len(SPECIFIC_IDS)} specific document IDs: {SPECIFIC_IDS}")
+        target_links = [f"https://library.ncdd.gov.kh/detail/{doc_id}" for doc_id in SPECIFIC_IDS]
+    # 3. Automatic crawl from main website
+    else:
+        limit = TEST_LIMIT if TEST_MODE else None
+        print(f"[START] Discovering documents starting from {MAIN_URL}...")
+        document_links = discover_document_links(MAIN_URL, limit=limit)
+        target_links = []
+        for link in document_links:
+            id_match = re.search(r"/detail/(\d+)", link)
+            doc_id = id_match.group(1) if id_match else None
+            if doc_id and doc_id not in processed_ids:
+                target_links.append(link)
 
-    target_links = []
-    for link in document_links:
-        id_match = re.search(r"/detail/(\d+)", link)
-        doc_id = id_match.group(1) if id_match else None
-        if doc_id and doc_id not in processed_ids:
-            target_links.append(link)
-
-    print(f"[FOUND] Found {len(target_links)} new documents to process.")
+    print(f"[FOUND] Found {len(target_links)} documents to process.")
     print(f"[OUTPUT] Text files will be saved in: {EXTRACTED_DIR}/")
     print("-" * 75)
 
