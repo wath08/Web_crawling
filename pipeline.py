@@ -24,12 +24,11 @@ try:
 except ImportError:
     HAS_PYTESSERACT = False
 
-# ==============================================================================
-# 🎯 1. SET YOUR TARGET URL / SPECIFIC FILE HERE
-# ==============================================================================
+
+#  1. SET YOUR TARGET URL / SPECIFIC FILE HERE
 
 # Option A: Paste a single specific detail URL link to test directly:
-TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
+TARGET_URL = ""
 
 # Option B: Put specific document IDs to test (e.g. [17235, 17236]):
 SPECIFIC_IDS = []
@@ -37,9 +36,9 @@ SPECIFIC_IDS = []
 # Option C: Crawl starting from Main Website Homepage
 MAIN_URL = "https://library.ncdd.gov.kh/"
 
-# Run Mode when crawling from MAIN_URL:
+# Run Mode when crawling from MAIN_URL more than 2 
 TEST_MODE = True
-TEST_LIMIT = 5
+TEST_LIMIT = 1
 
 # Gemini API Key (Optional: if not set, automatically uses free local Khmer OCR)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
@@ -58,21 +57,71 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(EXTRACTED_DIR, exist_ok=True)
 
 # ==============================================================================
-# COMPLETE KHMER UNICODE CHARACTER SET & INDICES (U+1780 - U+17FF)
+# COMPLETE KHMER UNICODE CHARACTER SET & INDICES (U+1780 - U+17FF & U+19E0 - U+19FF)
 # ==============================================================================
 
+# 1. (Khmer Consonants: 33 letters)
 KHMER_CONSONANTS = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
+
+# 2.  (Khmer Independent Vowels)
 KHMER_INDEPENDENT_VOWELS = "ឣឤឥឦឧឨឩឪឫឬឭឮឯឰឱឲឳ"
+
+# 3. (Khmer Dependent Vowel Signs)
 KHMER_DEPENDENT_VOWELS = "ាិីឹឺុូួើឿៀេែៃោៅ"
+
 KHMER_DIACRITICS = [
-    "\u17c6", "\u17c7", "\u17c8", "\u17c9", "\u17ca", "\u17cb",
-    "\u17cc", "\u17cd", "\u17ce", "\u17cf", "\u17d0", "\u17d1",
-    "\u17d2", "\u17d3"
+    "ំ",   # Nikkahit (និគ្គហិត)
+    "ះ",   # Reahmukh (រះមុខ)
+    "ៈ",   # Yuukaleapintu (យុគលពិន្ទុ)
+    "៉",   # Muusikoatoan (មូសិកទន្ត/ធ្មេញកណ្តុរ)
+    "៊",   # Triisap (ត្រីស័ព្ទ)
+    "់",   # Bantoc (បន្តក់)
+    "៌",   # Robat (របាទ)
+    "៍",   # Toandakhiat (ទណ្ឌឃាត)
+    "៎",   # Kakabat (កាកបាទ)
+    "៏",   # Ahsda (អស្តា)
+    "័",   # Samyok Sannya (សំយោគសញ្ញា)
+    "៑",   # Viriam (វិរាម)
+    "្",   # Sign Coeng (ជើងអក្សរ)
+    "៓",   # Bathamasat (បឋមាសាឍ)
+    "៝",   # Atirek (អតិរេកសញ្ញា)
 ]
+
+# 5. លេខខ្មែរ ០ ដល់ ៩ (Khmer Digits: 0-9)
 KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
-KHMER_SYMBOLS = "។៕៛ៗ៙៚៖៘"
-ALL_KHMER_CHARS = KHMER_CONSONANTS + KHMER_INDEPENDENT_VOWELS + KHMER_DEPENDENT_VOWELS + "".join(KHMER_DIACRITICS) + KHMER_DIGITS + KHMER_SYMBOLS
-LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ\"\'`~^|\\<>ù\ufffd")
+
+# 6. (Khmer Punctuation, Currency & Lunar Symbols)
+KHMER_SYMBOLS = (
+    "។"     # ខណ្ឌ (Khan / Full stop)
+    "៕"     # បរិយោសាន (Bariyosan / End of text)
+    "៖"     # ចំណុចពីរគូស (Colon)
+    "ៗ"     # លេខទោ (Repetition sign)
+    "៘"     # ល៉ៈ (Et cetera)
+    "៙"     # ភ្នែកមាន់ (Opening sign)
+    "៚"     # គោមូត្រ (Ending sign)
+    "៛"     # សញ្ញារៀល (Khmer Riel Currency)
+    "ៜ"     # សញ្ញាអាវសាន (Avakan)
+    "៝"     # សញ្ញាអតិរេក
+    # សញ្ញាកាលបរិច្ឆេទ និងលេខខ្នាតខ្មែរបុរាណ (Khmer Lunar Symbols: U+19E0 - U+19FF)
+    "᧠᧡᧢᧣᧤᧥᧦᧧᧨᧩᧪᧫᧬᧭᧮᧯᧰᧱᧲᧳᧴᧵᧶᧷᧸᧹᧺᧻᧼᧽᧾᧿"
+)
+
+# 7. សញ្ញាទូទៅប្រើជាមួយភាសាខ្មែរ (Universal Punctuation & Quotes)
+UNIVERSAL_PUNCTUATION = "«»“”‘’()[]{}<>%‰$+-=/*_.,:;?!~\"'#@ "
+
+# 8. បញ្ចូលតួអក្សរ និងសញ្ញាស្របច្បាប់ទាំងអស់ (Complete Valid Characters)
+ALL_KHMER_CHARS = (
+    KHMER_CONSONANTS
+    + KHMER_INDEPENDENT_VOWELS
+    + KHMER_DEPENDENT_VOWELS
+    + "".join(KHMER_DIACRITICS)
+    + KHMER_DIGITS
+    + KHMER_SYMBOLS
+    + UNIVERSAL_PUNCTUATION
+)
+
+# Legacy non-Unicode shadow/font artifact glyphs to strip
+LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ`^|\\ù\ufffd")
 
 GEMINI_OCR_PROMPT = """Extract all the Khmer text from this document image accurately.
 - Preserve all titles, articles (មាត្រា), bullet points, and tables in clean Markdown.
