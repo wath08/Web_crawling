@@ -27,6 +27,7 @@ MAIN_URL = "https://library.ncdd.gov.kh/"
 # Run Mode when crawling from MAIN_URL
 TEST_MODE = True
 TEST_LIMIT = 1
+
 # Gemini API Key (Loaded automatically from .env or system environment)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
@@ -358,7 +359,7 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
             image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=[
                     GEMINI_OCR_PROMPT,
                     image_part
@@ -429,7 +430,7 @@ def process_pdf_document(pdf_path, doc_info):
         # 4. OCR Processing via Gemini Vision
         ocr_text = ""
         if client:
-            print(f"      [GEMINI 2.5 FLASH] [Page {page_num}/{total_pages}] Reading scanned image with Gemini Vision AI...")
+            print(f"      [GEMINI FLASH] [Page {page_num}/{total_pages}] Reading scanned image with Gemini Vision AI...")
             ocr_text = extract_text_via_gemini(img, doc_id, page_num, max_retries=2)
         else:
             print(f"      [WARNING] [Page {page_num}/{total_pages}] Scanned image requires Gemini API Key!")
