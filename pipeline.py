@@ -16,7 +16,7 @@ import unicodedata
 #  1. SET YOUR TARGET URL / SPECIFIC FILE HERE
 
 # Option A: Paste a single specific detail URL link to test directly:
-TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
+TARGET_URL = ""
 
 # Option B: Put specific document IDs to test (e.g. [17235, 17236]):
 SPECIFIC_IDS = []
@@ -26,7 +26,7 @@ MAIN_URL = "https://library.ncdd.gov.kh/"
 
 # Run Mode when crawling from MAIN_URL
 TEST_MODE = True
-TEST_LIMIT = 1
+TEST_LIMIT = 5
 
 # Gemini API Key (Loaded automatically from .env or system environment)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
@@ -359,7 +359,7 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
             image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
 
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3.6-flash",
                 contents=[
                     GEMINI_OCR_PROMPT,
                     image_part
@@ -472,7 +472,6 @@ def process_pdf_document(pdf_path, doc_info):
         return True
     else:
         print(f"   [WARN] No text extracted for ID {doc_id}")
-        mark_id_processed(doc_id)
         return False
 
 # ==============================================================================
