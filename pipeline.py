@@ -11,24 +11,12 @@ import pymupdf
 from PIL import Image, ImageStat
 import unicodedata
 
-try:
-    import pytesseract
-    # Configure path to Tesseract binary
-    if os.path.exists("/opt/anaconda3/bin/tesseract"):
-        pytesseract.pytesseract.tesseract_cmd = "/opt/anaconda3/bin/tesseract"
-    elif os.path.exists("/usr/local/bin/tesseract"):
-        pytesseract.pytesseract.tesseract_cmd = "/usr/local/bin/tesseract"
-    elif os.path.exists("/opt/homebrew/bin/tesseract"):
-        pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
-    HAS_PYTESSERACT = True
-except ImportError:
-    HAS_PYTESSERACT = False
 
 
 #  1. SET YOUR TARGET URL / SPECIFIC FILE HERE
 
 # Option A: Paste a single specific detail URL link to test directly:
-TARGET_URL = ""
+TARGET_URL = "https://library.ncdd.gov.kh/detail/17235"
 
 # Option B: Put specific document IDs to test (e.g. [17235, 17236]):
 SPECIFIC_IDS = []
@@ -36,8 +24,9 @@ SPECIFIC_IDS = []
 # Option C: Crawl starting from Main Website Homepage
 MAIN_URL = "https://library.ncdd.gov.kh/"
 
-# Run Mode when crawling from MAIN_URL more than 2 
+# Run Mode when crawling from MAIN_URL
 TEST_MODE = True
+TEST_LIMIT = 1
 # Gemini API Key (Loaded automatically from .env or system environment)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
@@ -137,30 +126,72 @@ if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY_HERE":
         print("[INFO] Connected to Gemini API successfully.")
     except Exception as e:
         print(f"[WARN] Failed to initialize Google GenAI client: {e}")
+else:
+    print("\n" + "!" * 75)
+    print("[WARNING] GEMINI_API_KEY is not set or empty!")
+    print("[WARNING] To get your 100% FREE Gemini API Key, please visit:")
+    print("          👉 https://aistudio.google.com/api-keys")
+    print("[INFO] Falling back to free local Khmer OCR (Tesseract) for scanned pages.")
+    print("!" * 75 + "\n")
 
 # ==============================================================================
 # COMPREHENSIVE KHMER UNICODE NORMALIZER & CLEANER
 # ==============================================================================
 
+VALID_KHMER_STREAM_REGEX = re.compile(r"[^\u1780-\u17ff\u19e0-\u19ff0-9a-zA-Z\s.,;:()/%«»“”\"\'\-?!\n#@+=<>]")
+
 def clean_khmer_text(text):
     if not text:
         return ""
 
-    cleaned = [ch for ch in text if ch not in LEGACY_JUNK_CHARS]
-    res = "".join(cleaned)
+    # 1. Strip all non-Khmer Western Latin-1 shadow font junk glyphs (InDesign artifacts)
+    cleaned = VALID_KHMER_STREAM_REGEX.sub("", text)
 
+    # 2. Merge broken mid-word linebreaks (Khmer word split across newlines)
+    cleaned = re.sub(r"([\u1780-\u17d3])\n([\u1780-\u17d3])", r"\1\2", cleaned)
+
+    # 3. Deduplicate Khmer vowels and diacritics
     all_vowels_and_signs = list(KHMER_DEPENDENT_VOWELS) + KHMER_DIACRITICS
     for d in all_vowels_and_signs:
-        res = re.sub(f"{d}+", d, res)
+        cleaned = re.sub(f"{d}+", d, cleaned)
 
+    # 4. Deduplicate repeated bold consonants (when not preceded by Coeng \u17d2)
     for c in KHMER_CONSONANTS:
-        res = re.sub(f"(?<!\u17d2){c}{{2,}}", c, res)
+        cleaned = re.sub(f"(?<!\u17d2){c}{{2,}}", c, cleaned)
 
-    res = re.sub(r"\u17d2+", "\u17d2", res)
-    res = re.sub(r"[ ]{2,}", " ", res)
-    res = re.sub(r"\n{3,}", "\n\n", res)
+    # 5. Fix common Adobe InDesign broken ligature & typography artifacts
+    cleaned = re.sub(r"ក្រោ្រោម|ក្រោប្រោម", "ក្រោម", cleaned)
+    cleaned = re.sub(r"ដែ\s*ល", "ដែល", cleaned)
+    cleaned = re.sub(r"អ្ន\s*នក|អ្ននក", "អ្នក", cleaned)
+    cleaned = re.sub(r"ប្រព័ន្ធធ", "ប្រព័ន្ធ", cleaned)
+    cleaned = re.sub(r"ឡើ\s*ើង", "ឡើង", cleaned)
+    cleaned = re.sub(r"ក្នុ\s*ង", "ក្នុង", cleaned)
+    cleaned = re.sub(r"ខ្លួ\s*ន", "ខ្លួន", cleaned)
+    cleaned = re.sub(r"ផែ\s*នការ", "ផែនការ", cleaned)
+    cleaned = re.sub(r"ផ្សេ\s*ង", "ផ្សេង", cleaned)
+    cleaned = re.sub(r"បន្ថែ\s*ម", "បន្ថែម", cleaned)
+    cleaned = re.sub(r"ផ្អែ\s*ក", "ផ្អែក", cleaned)
+    cleaned = re.sub(r"ចាប់ផ្តើ\s*ម", "ចាប់ផ្តើម", cleaned)
+    cleaned = re.sub(r"កាត់បន្ថ\s*យ", "កាត់បន្ថយ", cleaned)
+    cleaned = re.sub(r"ឆ្លើ\s*ើយ", "ឆ្លើយ", cleaned)
+    cleaned = re.sub(r"ឱ្យ\s*យ", "ឱ្យ", cleaned)
+    cleaned = re.sub(r"ជួប្រទះ", "ជួបប្រទះ", cleaned)
+    cleaned = re.sub(r"រដ្ឋឋបាល", "រដ្ឋបាល", cleaned)
+    cleaned = re.sub(r"សន្ទទស្សសន៍", "សន្ទស្សន៍", cleaned)
+    cleaned = re.sub(r"សីតុណ្ហហភាព", "សីតុណ្ហភាព", cleaned)
+    cleaned = re.sub(r"ខ្យយល់", "ខ្យល់", cleaned)
+    cleaned = re.sub(r"អារម្មមណ៍", "អារម្មណ៍", cleaned)
+    cleaned = re.sub(r"ខ្ពពស់", "ខ្ពស់", cleaned)
+    cleaned = re.sub(r"បន្តត", "បន្ត", cleaned)
+    cleaned = re.sub(r"ទួល", "ទទួល", cleaned)
+    cleaned = re.sub(r"សង្ខ\s*ខេប", "សង្ខេប", cleaned)
+    cleaned = re.sub(r"ក្ន\s*ង", "ក្នុង", cleaned)
+
+    cleaned = re.sub(r"\u17d2+", "\u17d2", cleaned)
+    cleaned = re.sub(r"[ ]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     
-    return unicodedata.normalize("NFC", res).strip()
+    return unicodedata.normalize("NFC", cleaned).strip()
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -312,6 +343,9 @@ def download_pdf_file(pdf_url, save_path):
 
 def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
     if not client:
+        print(f"      [WARNING] [Page {page_num}] Gemini API Key is missing or empty!")
+        print(f"      [SKIP] [Page {page_num}] Cannot transcribe scanned image without Gemini API Key.")
+        log_error(doc_id, page_num, "Gemini API Key Missing - visit https://aistudio.google.com/api-keys")
         return ""
 
     for attempt in range(1, max_retries + 1):
@@ -345,17 +379,6 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
 
     return ""
 
-def extract_text_via_local_ocr(pil_image):
-    """Fallback local Khmer OCR using Tesseract (100% Free, no API keys needed)."""
-    if not HAS_PYTESSERACT:
-        return ""
-    try:
-        text = pytesseract.image_to_string(pil_image, lang="khm")
-        return text.strip()
-    except Exception as e:
-        print(f"      [WARN] Local OCR error: {e}")
-        return ""
-
 # ==============================================================================
 # PROCESS DOCUMENT AND SAVE
 # ==============================================================================
@@ -386,35 +409,37 @@ def process_pdf_document(pdf_path, doc_info):
         khmer_chars = [c for c in cleaned_text if c in ALL_KHMER_CHARS]
 
         if len(khmer_chars) >= 25:
-            print(f"      [DIRECT CLEAN] [Page {page_num}/{total_pages}] Extracted & normalized clean Khmer text ({len(khmer_chars)} chars).")
+            print(f"      [TYPE: DIGITAL PDF] [Page {page_num}/{total_pages}] Extracted selectable text via PyMuPDF ({len(khmer_chars)} chars).")
             extracted_pages.append(cleaned_text)
             continue
 
-        # 2. Render page to image
+        # 2. Render page to image (Scanned Page)
+        print(f"      [TYPE: SCANNED PDF] [Page {page_num}/{total_pages}] Detected scanned image/photo page.")
         pix = page.get_pixmap(dpi=200)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
         # 3. Check for blank page
         if is_page_blank(img):
-            print(f"      [BLANK] [Page {page_num}/{total_pages}] Blank page -> Skipped.")
+            print(f"      [BLANK PAGE] [Page {page_num}/{total_pages}] Blank paper detected -> Skipped to save quota.")
             continue
 
-        # 4. OCR Processing: Gemini Vision if key provided, otherwise Local Tesseract Khmer OCR
+        # 4. OCR Processing via Gemini Vision
         ocr_text = ""
         if client:
-            print(f"      [GEMINI OCR] [Page {page_num}/{total_pages}] Transcribing with Gemini Flash...")
+            print(f"      [GEMINI 2.5 FLASH] [Page {page_num}/{total_pages}] Reading scanned image with Gemini Vision AI...")
             ocr_text = extract_text_via_gemini(img, doc_id, page_num, max_retries=2)
-        
-        if not ocr_text and HAS_PYTESSERACT:
-            print(f"      [LOCAL OCR] [Page {page_num}/{total_pages}] Transcribing with Local Khmer OCR...")
-            ocr_text = extract_text_via_local_ocr(img)
+        else:
+            print(f"      [WARNING] [Page {page_num}/{total_pages}] Scanned image requires Gemini API Key!")
+            print(f"      👉 Please get your FREE Gemini API Key from: https://aistudio.google.com/api-keys")
+            print(f"      [SKIP] [Page {page_num}/{total_pages}] Page skipped due to missing API Key.")
+            log_error(doc_id, page_num, "Missing Gemini API Key - Get key at https://aistudio.google.com/api-keys")
 
         if ocr_text:
             cleaned_ocr = clean_khmer_text(ocr_text)
             extracted_pages.append(cleaned_ocr)
             print(f"      [SUCCESS] [Page {page_num}/{total_pages}] Clean text extracted ({len(cleaned_ocr)} chars).")
         else:
-            print(f"      [WARN] [Page {page_num}/{total_pages}] No OCR text found.")
+            print(f"      [WARN] [Page {page_num}/{total_pages}] No text extracted.")
         
         time.sleep(0.5)
 
@@ -460,12 +485,13 @@ def main():
 
     # 1. Single target URL provided
     if TARGET_URL and TARGET_URL.strip():
-        print(f"[TARGET URL] Processing single target link: {TARGET_URL}")
-        target_links = [TARGET_URL.strip()]
+        full_target = urllib.parse.urljoin(MAIN_URL, TARGET_URL.strip())
+        print(f"[TARGET URL] Processing single target link: {full_target}")
+        target_links = [full_target]
     # 2. Specific IDs configured
     elif SPECIFIC_IDS:
         print(f"[TARGET IDS] Processing {len(SPECIFIC_IDS)} specific document IDs: {SPECIFIC_IDS}")
-        target_links = [f"https://library.ncdd.gov.kh/detail/{doc_id}" for doc_id in SPECIFIC_IDS]
+        target_links = [urllib.parse.urljoin(MAIN_URL, f"detail/{doc_id}") for doc_id in SPECIFIC_IDS]
     # 3. Automatic crawl from main website
     else:
         limit = TEST_LIMIT if TEST_MODE else None
