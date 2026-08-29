@@ -38,10 +38,13 @@ MAIN_URL = "https://library.ncdd.gov.kh/"
 
 # Run Mode when crawling from MAIN_URL more than 2 
 TEST_MODE = True
-TEST_LIMIT = 1
-
-# Gemini API Key (Optional: if not set, automatically uses free local Khmer OCR)
+# Gemini API Key (Loaded automatically from .env or system environment)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), "r", encoding="utf-8") as f_env:
+        for line in f_env:
+            if line.strip().startswith("GEMINI_API_KEY="):
+                GEMINI_API_KEY = line.strip().split("=", 1)[1].strip("\"' ")
 
 # ==============================================================================
 # DIRECTORY SETTINGS
@@ -87,29 +90,16 @@ KHMER_DIACRITICS = [
     "៝",   # Atirek (អតិរេកសញ្ញា)
 ]
 
-# 5. លេខខ្មែរ ០ ដល់ ៩ (Khmer Digits: 0-9)
+# 5. (Khmer Digits: 0-9)
 KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
 
-# 6. (Khmer Punctuation, Currency & Lunar Symbols)
-KHMER_SYMBOLS = (
-    "។"     # ខណ្ឌ (Khan / Full stop)
-    "៕"     # បរិយោសាន (Bariyosan / End of text)
-    "៖"     # ចំណុចពីរគូស (Colon)
-    "ៗ"     # លេខទោ (Repetition sign)
-    "៘"     # ល៉ៈ (Et cetera)
-    "៙"     # ភ្នែកមាន់ (Opening sign)
-    "៚"     # គោមូត្រ (Ending sign)
-    "៛"     # សញ្ញារៀល (Khmer Riel Currency)
-    "ៜ"     # សញ្ញាអាវសាន (Avakan)
-    "៝"     # សញ្ញាអតិរេក
-    # សញ្ញាកាលបរិច្ឆេទ និងលេខខ្នាតខ្មែរបុរាណ (Khmer Lunar Symbols: U+19E0 - U+19FF)
-    "᧠᧡᧢᧣᧤᧥᧦᧧᧨᧩᧪᧫᧬᧭᧮᧯᧰᧱᧲᧳᧴᧵᧶᧷᧸᧹᧺᧻᧼᧽᧾᧿"
-)
+# 6. (Khmer Punctuation & Symbols)
+KHMER_SYMBOLS = "។៕៖ៗ៘៙៚៛ៜ៝"
 
-# 7. សញ្ញាទូទៅប្រើជាមួយភាសាខ្មែរ (Universal Punctuation & Quotes)
+# 7.  (Universal Punctuation & Quotes)
 UNIVERSAL_PUNCTUATION = "«»“”‘’()[]{}<>%‰$+-=/*_.,:;?!~\"'#@ "
 
-# 8. បញ្ចូលតួអក្សរ និងសញ្ញាស្របច្បាប់ទាំងអស់ (Complete Valid Characters)
+# 8.  (Complete Valid Characters)
 ALL_KHMER_CHARS = (
     KHMER_CONSONANTS
     + KHMER_INDEPENDENT_VOWELS
@@ -123,11 +113,12 @@ ALL_KHMER_CHARS = (
 # Legacy non-Unicode shadow/font artifact glyphs to strip
 LEGACY_JUNK_CHARS = set("{}÷þǮÌÚŒƒŽšǝ±Â”ǞæØ‰Đǫ`^|\\ù\ufffd")
 
-GEMINI_OCR_PROMPT = """Extract all the Khmer text from this document image accurately.
-- Preserve all titles, articles (មាត្រា), bullet points, and tables in clean Markdown.
-- Fix broken Khmer unicode characters and subscripts.
-- Do NOT include headers, footers, page numbers, or official stamp marks.
-- Output ONLY the extracted clean Khmer text without any conversational reply.
+GEMINI_OCR_PROMPT = """Extract and transcribe all the text from this document image with 100% strict fidelity and accuracy.
+- Transcribe EXACTLY word-for-word as written in the original document. Do NOT summarize, rephrase, interpret, or add any extra words.
+- Preserve all structural formatting, titles, legal articles (មាត្រា), bullet points, and tables in clean Markdown.
+- Ensure correct Khmer Unicode characters, vowel ordering, and subscripts (ជើងអក្សរ).
+- Do NOT include repetitive running headers, running footers, page numbers (e.g. ទំព័រ ១/៤), or circular ink stamp texts.
+- Output ONLY the verbatim extracted clean text without any introductory or concluding conversational reply.
 """
 
 HEADERS = {
