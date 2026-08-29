@@ -350,15 +350,18 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
 
     for attempt in range(1, max_retries + 1):
         try:
+            from google.genai import types
             img_byte_arr = io.BytesIO()
             pil_image.save(img_byte_arr, format='JPEG', quality=90)
             img_bytes = img_byte_arr.getvalue()
+            
+            image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
 
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=[
                     GEMINI_OCR_PROMPT,
-                    {"mime_type": "image/jpeg", "data": img_bytes}
+                    image_part
                 ]
             )
 
@@ -367,11 +370,11 @@ def extract_text_via_gemini(pil_image, doc_id, page_num, max_retries=2):
 
         except Exception as e:
             err_msg = str(e)
-            print(f"      [WARN] [Page {page_num}] Attempt {attempt}/{max_retries} failed: {err_msg[:60]}...")
+            print(f"      [WARN] [Page {page_num}] Attempt {attempt}/{max_retries} failed: {err_msg[:80]}...")
 
             if attempt < max_retries:
-                print("      [PAUSE] Pausing 60 seconds before retry...")
-                time.sleep(60)
+                print("      [PAUSE] Pausing 5 seconds before retry...")
+                time.sleep(5)
             else:
                 print(f"      [SKIP] [Page {page_num}] Failed twice. Skipping to save tokens.")
                 log_error(doc_id, page_num, f"Gemini failed twice: {err_msg}")
