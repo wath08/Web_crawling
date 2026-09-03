@@ -4,6 +4,13 @@ __pycache__/
 *.pyc
 .DS_Store
 .vscode/
-processed_ids.txt
-skipped_errors.log
+record/
+processed_ids*.txt
+*.log
 .env
+extracted_texts/
+cleaned_data/
+
+# Exclude ministries as requested
+*ministries/
+**/ministries/**

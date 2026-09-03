@@ -3,127 +3,169 @@ import sys
 import time
 import json
 import re
+import html
 import urllib.parse
 import unicodedata
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 # ==============================================================================
-# 1. CRAWLER CONFIGURATION
+# 1. GOVERNMENT CRAWLER CONFIGURATION (GDT - អគ្គនាយកដ្ឋានពន្ធដារ / ECONOMY)
 # ==============================================================================
 
-# Target website base URL
-BASE_URL = "https://btv.com.kh"
+INSTITUTION_NAME = "អគ្គនាយកដ្ឋានពន្ធដារ"
+BASE_URL = "https://www.tax.gov.kh"
+LIST_URL_PATTERN = "https://www.tax.gov.kh/kh/event?p={page}"
 
-# Starting Article ID (where the crawler begins)
-START_ID = 114468
+# Start Page (1 = អត្ថបទថ្មីបំផុត Bq5cun30264204244W1)
+START_PAGE = 1
 
-# "DOWN" : Count backwards (114468 -> 114467 -> 114466...) to scrape existing/older articles
-CRAWL_DIRECTION = "DOWN"
+# ចំនួនទំព័រអតិបរមា (50 ទំព័រ)
+MAX_PAGES = 50
 
-# How many articles to crawl in this batch (set to None for continuous unlimited crawl)
-MAX_ARTICLES = 30000
+# ចំនួនអត្ថបទដែលត្រូវប្រមូល (1000 អត្ថបទ)
+MAX_ARTICLES = 1000
 
+# ចំនួន Threads ស្របគ្នា (4 Workers)
+NUM_WORKERS = 4
 
-# Number of concurrent workers for multi-threading (2 workers = fast & stable without rate limits)
-NUM_WORKERS = 2
-
-# Delay between requests in seconds to keep scraping stable
+# រយៈពេលរង់ចាំរវាង Request (០.២ វិនាទី)
 REQUEST_DELAY = 0.2
 
-
 # ==============================================================================
-# 2. DIRECTORY SETTINGS & THREAD LOCK
+# 2. DIRECTORY SETTINGS (ECONOMY FOLDER)
 # ==============================================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-EXTRACTED_DIR = os.path.join(BASE_DIR, "extracted_texts")
-CHECKPOINT_FILE = os.path.join(BASE_DIR, "processed_ids.txt")
-ERROR_LOG_FILE = os.path.join(BASE_DIR, "skipped_errors.log")
-JSONL_OUTPUT_FILE = os.path.join(EXTRACTED_DIR, "khmer_articles_corpus.jsonl")
+DATASET_ROOT_DIR = os.path.join(BASE_DIR, "KhmerLLM-Dataset")
+GOV_ECONOMY_DIR = os.path.join(DATASET_ROOT_DIR, "04_government", "economy")
+RECORD_DIR = os.path.join(BASE_DIR, "record")
 
-os.makedirs(EXTRACTED_DIR, exist_ok=True)
-FILE_LOCK = threading.Lock()
+os.makedirs(RECORD_DIR, exist_ok=True)
+os.makedirs(GOV_ECONOMY_DIR, exist_ok=True)
 
+CHECKPOINT_FILE = os.path.join(RECORD_DIR, "processed_keys_gdt.txt")
+ERROR_LOG_FILE = os.path.join(RECORD_DIR, "skipped_errors_gdt.log")
+JSONL_OUTPUT_FILE = os.path.join(GOV_ECONOMY_DIR, "economy_gdt.jsonl")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "km,en-US,en;q=0.9",
+    "Referer": "https://www.tax.gov.kh/kh/event"
 }
 
+def create_robust_session():
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    retries = Retry(total=5, backoff_factor=1.0, status_forcelist=[500, 502, 503, 504, 429])
+    adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
 # ==============================================================================
-# 3. KHMER UNICODE CHARACTER SET & NORMALIZER
+# 3. KHMER UNICODE CHARACTER SET & BOILERPLATE REMOVER
 # ==============================================================================
 
 KHMER_CONSONANTS = "កខគឃងចឆជឈញដឋឌឍណតថទធនបផពភមយរលវសហឡអ"
 KHMER_INDEPENDENT_VOWELS = "ឣឤឥឦឧឨឩឪឫឬឭឮឯឰឱឲឳ"
 KHMER_DEPENDENT_VOWELS = "ាិីឹឺុូួើឿៀេែៃោៅ"
 KHMER_DIACRITICS = ["ំ", "ះ", "ៈ", "៉", "៊", "់", "៌", "៍", "៎", "៏", "័", "៑", "្", "៓", "៝"]
-KHMER_DIGITS = "០១២៣៤៥៦៧៨៩"
-KHMER_SYMBOLS = "។៕៖ៗ៘៙៚៛ៜ៝"
-UNIVERSAL_PUNCTUATION = "«»“”‘’()[]{}<>%‰$+-=/*_.,:;?!~\"'#@ "
-
-ALL_KHMER_CHARS = set(
-    KHMER_CONSONANTS
-    + KHMER_INDEPENDENT_VOWELS
-    + KHMER_DEPENDENT_VOWELS
-    + "".join(KHMER_DIACRITICS)
-    + KHMER_DIGITS
-    + KHMER_SYMBOLS
-    + UNIVERSAL_PUNCTUATION
-)
 
 VALID_KHMER_STREAM_REGEX = re.compile(r"[^\u1780-\u17ff\u19e0-\u19ff0-9a-zA-Z\s.,;:()/%«»“”\"\'\-?!\n#@+=<>]")
 
+BOILERPLATE_PATTERNS = [
+    r"https?://[^\s]+",
+    r"[-–—•*]*\s*តេឡេក្រាម\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*គេហទំព័រ\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ទិកតុក\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*អិច\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*យូ\s*ធូប\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*យូធូប\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ហ្វេសប៊ុក\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ឆាណែល\s*តេឡេក្រាម\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ទំព័រ\s*ហ្វេសប៊ុក\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*បណ្ដាញ\s*សង្គម\s*ផ្លូវការ\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ផ្សាយ\s*បន្ត\s*ដោយ\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ចែករំលែក\s*:\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ចុច\s*Link\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ចុច\s*ទីនេះ\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*អាន\s*ព័ត៌មាន\s*បន្ថែម\s*[^.។៕\n]*",
+    r"[-–—•*]*\s*ទូរស័ព្ទ\s*លេខ\s*:\s*[\d\s/\-]+",
+    r"[-–—•*]*\s*(?:Email|អ៊ីមែល|សារអេឡិចត្រូនិច)\s*:\s*[^\s]+"
+]
+
 def clean_khmer_text(text: str) -> str:
-    """
-    Cleans and normalizes Khmer text according to Unicode (NFC) standards.
-    Strips corrupt legacy glyphs, handles broken ligatures, deduplicates vowels,
-    and formats spacing cleanly.
-    """
+    """Cleans, normalizes, and converts ASCII escaped quotes into standard Khmer quotes «...» with zero backslashes."""
     if not text:
         return ""
 
-    # 1. Remove non-Khmer font shadow glyphs and corrupted artifacts
-    cleaned = VALID_KHMER_STREAM_REGEX.sub("", text)
+    # 1. Unescape HTML entities (&quot;, &nbsp;, &mdash;, &amp;, etc.)
+    cleaned = html.unescape(text)
 
-    # 2. Re-join words split across newlines
-    cleaned = re.sub(r"([\u1780-\u17d3])\n([\u1780-\u17d3])", r"\1\2", cleaned)
+    # 2. Strip boilerplate patterns
+    for pat in BOILERPLATE_PATTERNS:
+        cleaned = re.sub(pat, " ", cleaned, flags=re.IGNORECASE)
 
-    # 3. Deduplicate consecutive duplicate vowels and diacritics
+    # 3. Clean literal backslashes
+    cleaned = re.sub(r"\\+", "", cleaned)
+
+    # 4. Filter corrupted characters
+    cleaned = VALID_KHMER_STREAM_REGEX.sub("", cleaned)
+
+    # 5. Convert straight quotes "..." to formal Khmer quotes «...» (eliminates \" in JSON!)
+    parts = cleaned.split('"')
+    if len(parts) > 1:
+        new_parts = []
+        for i, part in enumerate(parts):
+            if i % 2 == 1:
+                new_parts.append(f"«{part}»")
+            else:
+                new_parts.append(part)
+        cleaned = "".join(new_parts)
+
+    # 6. Deduplicate consecutive identical vowels and signs (NOT consonants!)
     all_vowels_and_signs = list(KHMER_DEPENDENT_VOWELS) + KHMER_DIACRITICS
     for d in all_vowels_and_signs:
         cleaned = re.sub(f"{d}+", d, cleaned)
 
-    # 4. Deduplicate repeated consonants when not preceded by Coeng (\u17d2)
-    for c in KHMER_CONSONANTS:
-        cleaned = re.sub(f"(?<!\u17d2){c}{{2,}}", c, cleaned)
-
-    # 5. Fix common broken words and misplaced characters
+    # 7. Fix common broken words and restore legitimate compound consonants
     cleaned = re.sub(r"ដែ\s*ល", "ដែល", cleaned)
     cleaned = re.sub(r"ក្នុ\s*ង", "ក្នុង", cleaned)
     cleaned = re.sub(r"ឡើ\s*ើង", "ឡើង", cleaned)
     cleaned = re.sub(r"ខ្លួ\s*ន", "ខ្លួន", cleaned)
     cleaned = re.sub(r"ឱ្យ\s*យ", "ឱ្យ", cleaned)
     cleaned = re.sub(r"រដ្ឋឋបាល", "រដ្ឋបាល", cleaned)
+    cleaned = re.sub(r"ផ្នែកម្មន្តសាល", "ផ្នែកកម្មន្តសាល", cleaned)
+    cleaned = re.sub(r"ផ្នែកម្មសិទ្ធិ", "ផ្នែកកម្មសិទ្ធិ", cleaned)
+    cleaned = re.sub(r"(?<![ក-អ])ក្កដា", "កក្កដា", cleaned)
     cleaned = re.sub(r"\u17d2+", "\u17d2", cleaned)
 
-    # 6. Format whitespace and remove all newline breaks (\n\n, \n, \r)
+    # 8. Remove download badges (KH, EN, Download, ទាញយក)
+    cleaned = re.sub(r"\s+(?:KH|EN|PDF|Download|ទាញយក)$", "", cleaned.strip(), flags=re.IGNORECASE)
+
+    # 9. Format whitespace and remove all newlines
     cleaned = re.sub(r"[\r\n\t]+", " ", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
 
-    return unicodedata.normalize("NFC", cleaned).strip()
+    # 10. Normalize NFC
+    cleaned = unicodedata.normalize("NFC", cleaned).strip()
 
+    # 11. Clean trailing symbols
+    cleaned = re.sub(r"\s+([។៕៖ៗ])$", r"\1", cleaned)
+    return cleaned
 
 # ==============================================================================
-# 4. CHECKPOINT & ERROR LOGGING
+# 4. CHECKPOINT & STORAGE
 # ==============================================================================
 
-def load_processed_ids() -> set:
-    """Loads all previously crawled article IDs from checkpoint file and existing JSONL corpus."""
+def load_processed_keys() -> set:
+    """Loads all previously crawled article keys."""
     processed = set()
     if os.path.exists(CHECKPOINT_FILE):
         with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
@@ -143,303 +185,189 @@ def load_processed_ids() -> set:
 
     return processed
 
-def mark_id_processed(article_id: str):
-    """Appends an article ID to the checkpoint file to avoid duplicate crawls."""
-    with FILE_LOCK:
-        with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{article_id}\n")
+def save_single_record(record: dict):
+    """Saves clean record directly to JSONL file and checkpoint."""
+    with open(JSONL_OUTPUT_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-def log_error(article_id: str, reason: str):
-    """Logs crawling or parsing errors to the error log file."""
-    with FILE_LOCK:
-        with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"ID: {article_id} | Reason: {reason} | Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-
+    with open(CHECKPOINT_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{record['id']}\n")
 
 # ==============================================================================
-# 5. HTML SCRAPER & PARSER FOR BTV NEWS
+# 5. FETCHER ENGINE
 # ==============================================================================
 
-def parse_btv_article_html(html_text: str, article_url: str) -> dict:
-    """
-    Extracts structured fields from BTV News HTML:
-    - Title: <h4 class="h4 color"> or <h1>
-    - Date/Time: <div class="group-date-share">
-    - Category: Breadcrumb item
-    - Content: <div class="font-size-detail textview">
-    """
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    # 1. Extract Title
-    title = ""
-    title_el = soup.find("h4", class_=lambda c: c and "h4" in c and "color" in c)
-    if not title_el:
-        title_el = soup.find("h1") or soup.find("h2") or soup.find("h4")
-    if title_el:
-        title = title_el.get_text(strip=True)
-
-    # 2. Extract Publish Date & Time
-    pub_date = ""
-    date_el = soup.find("div", class_=lambda c: c and "group-date-share" in c)
-    if date_el:
-        raw_date_text = date_el.get_text(" ", strip=True)
-        date_match = re.search(r"(\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)", raw_date_text)
-        if date_match:
-            pub_date = date_match.group(1).strip()
-        else:
-            pub_date = re.sub(r"(Facebook|Telegram|Linkedin|Linkin|\d+\s*$)", "", raw_date_text).strip()
-    else:
-        meta_date = soup.find("meta", property="article:published_time")
-        if meta_date and meta_date.get("content"):
-            pub_date = meta_date["content"]
-
-    # 3. Extract Category
-    category = ""
-    breadcrumb = soup.find("ul", class_=lambda c: c and "breadcrumb" in c)
-    if breadcrumb:
-        items = [li.get_text(strip=True) for li in breadcrumb.find_all("li")]
-        if len(items) > 1:
-            category = items[-1]
-
-    # 4. Extract Article Content
-    content_el = soup.find("div", class_=lambda c: c and "font-size-detail" in c and "textview" in c)
-    if not content_el:
-        content_el = soup.find("div", class_=lambda c: c and "detail-content" in c) or soup.find("article")
-
-    content_text = ""
-    if content_el:
-        # Remove advertisements, scripts, styling tags, and share buttons
-        for unwanted in content_el.find_all(["script", "style", "iframe", "button"]):
-            unwanted.decompose()
-        for ad in content_el.find_all("div", class_=lambda c: c and ("ads" in str(c).lower() or "view_ads" in str(c).lower())):
-            ad.decompose()
-
-        # Collect paragraphs cleanly
-        paragraphs = []
-        for p in content_el.find_all(["p", "div", "h2", "h3", "h4", "h5", "blockquote"]):
-            p_text = p.get_text(strip=True)
-            if p_text and len(p_text) > 10 and p_text not in paragraphs:
-                paragraphs.append(p_text)
-
-        if paragraphs:
-            content_text = " ".join(paragraphs)
-        else:
-            content_text = content_el.get_text(" ", strip=True)
-
-
-    # Fallback to meta description if content element is empty
-    if not content_text:
-        meta_desc = soup.find("meta", property="og:description") or soup.find("meta", attrs={"name": "description"})
-        if meta_desc and meta_desc.get("content"):
-            content_text = meta_desc["content"]
-
-    # Clean text via Khmer Unicode normalizer
-    title_clean = clean_khmer_text(title)
-    content_clean = clean_khmer_text(content_text)
-
-    id_match = re.search(r"/article/(\d+)", article_url)
-    article_id = id_match.group(1) if id_match else str(int(time.time()))
-
-    return {
-        "id": article_id,
-        "title": title_clean,
-        "date": pub_date.strip(),
-        "category": category.strip(),
-        "url": article_url,
-        "content": content_clean,
-    }
-
-# ==============================================================================
-# 6. CRAWLER & SCRAPER ENGINE
-# ==============================================================================
-
-def fetch_single_article(article_url: str) -> dict:
-    """Fetches HTML and parses a single article using isolated thread-safe HTTP request."""
-    try:
-        with requests.Session() as s:
-            s.headers.update(HEADERS)
-            resp = s.get(article_url, timeout=3.5)
+def fetch_page_article_keys(session, page_num: int) -> list:
+    """Fetches article keys from event page in exact visual order."""
+    page_url = LIST_URL_PATTERN.format(page=page_num)
+    for attempt in range(1, 4):
+        try:
+            resp = session.get(page_url, timeout=30)
             if resp.status_code == 200:
-                return parse_btv_article_html(resp.text, article_url)
-            else:
-                return {"error": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
+                soup = BeautifulSoup(resp.text, "html.parser")
+                keys = []
+                seen = set()
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    match = re.search(r"/kh/article\?key=([a-zA-Z0-9_-]+)", href)
+                    if match:
+                        k = match.group(1)
+                        if k not in seen and len(k) > 4:
+                            seen.add(k)
+                            keys.append(k)
+                return keys
+        except Exception:
+            time.sleep(1)
+    return []
 
+def fetch_gdt_article(session, article_key: str) -> dict:
+    """Fetches and parses a single GDT news article by key, filtering out PDF-only 1-line placeholders."""
+    article_url = f"{BASE_URL}/kh/article?key={article_key}"
 
+    for attempt in range(1, 4):
+        try:
+            resp = session.get(article_url, timeout=30)
+            if resp.status_code == 404:
+                return {"skip": "Article not found (404)"}
+            if resp.status_code != 200:
+                time.sleep(0.5)
+                continue
 
-def save_article_result(data: dict):
-    """Directly saves and streams the clean article into the JSONL corpus file with thread safety."""
-    article_id = data["id"]
-    json_record = {
-        "id": article_id,
-        "title": data["title"],
-        "date": data["date"],
-        "category": data["category"],
-        "url": data["url"],
-        "text": data["content"]
-    }
-
-    with FILE_LOCK:
-        with open(JSONL_OUTPUT_FILE, "a", encoding="utf-8") as f_jsonl:
-            f_jsonl.write(json.dumps(json_record, ensure_ascii=False) + "\n")
-
-    mark_id_processed(article_id)
-
-
-def discover_articles_from_site(base_url: str, limit: int = 50) -> list:
-    """Discovers latest article URLs by finding all article IDs on homepage and category pages."""
-    print(f"[CRAWLER] Discovering articles from homepage: {base_url} ...")
-    found_article_ids = set()
-
-    def extract_article_ids_from_soup(soup):
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            matches = re.findall(r"article(?:/|%2F|=)(\d+)", href)
-            for aid in matches:
-                found_article_ids.add(aid)
-
-    try:
-        resp = requests.get(base_url, headers=HEADERS, timeout=15)
-        if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
-            extract_article_ids_from_soup(soup)
 
-            # Discover via category navigation
-            category_links = set([
-                f"{base_url}/category/1",
-                f"{base_url}/category/2",
-                f"{base_url}/category/3",
-                f"{base_url}/category/4",
-                f"{base_url}/category/5",
-                f"{base_url}/category/6",
-            ])
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if "/category/" in href or "/news/" in href or "cat=" in href:
-                    category_links.add(urllib.parse.urljoin(base_url, href))
+            content_div = soup.find("div", id="content_detail") or soup.find("div", class_="article-container")
+            if not content_div:
+                return {"skip": "No content container found"}
 
-            for cat in list(category_links):
-                if limit and len(found_article_ids) >= limit * 2:
-                    break
-                try:
-                    c_resp = requests.get(cat, headers=HEADERS, timeout=10)
-                    if c_resp.status_code == 200:
-                        c_soup = BeautifulSoup(c_resp.text, "html.parser")
-                        extract_article_ids_from_soup(c_soup)
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"[WARN] Unable to reach {base_url}: {e}")
+            raw_text = content_div.get_text(" ", strip=True)
 
+            # Strip headers: អគ្គនាយកដ្ឋានពន្ធដារ, Date header, \d+ថ្ងៃមុន
+            cleaned_body = re.sub(r"^អគ្គនាយកដ្ឋានពន្ធដារ\s*", "", raw_text)
+            cleaned_body = re.sub(r"^ថ្ងៃ[^\n]+ឆ្នាំ\s*\d{4}\s*", "", cleaned_body)
+            cleaned_body = re.sub(r"^\d+\s*(?:ថ្ងៃ|ម៉ោង|នាទី)\s*មុន\s*", "", cleaned_body)
+            cleaned_body = clean_khmer_text(cleaned_body)
 
-    # Construct clean URLs (https://btv.com.kh/article/{id}) sorted ascending (20, 21, 22...)
-    sorted_ids = sorted(list(found_article_ids), key=lambda x: int(x))
-    clean_urls = [f"{base_url}/article/{aid}" for aid in sorted_ids]
-    return clean_urls[:limit] if limit else clean_urls
+            # 🛑 SKIP 1-LINE PDF PLACEHOLDERS
+            if len(cleaned_body) < 120:
+                return {"skip": f"PDF placeholder or too short ({len(cleaned_body)} chars)"}
 
+            khmer_char_count = len(re.findall(r"[\u1780-\u17ff]", cleaned_body))
+            if khmer_char_count < 80:
+                return {"skip": "Non-Khmer content"}
 
-def process_single_url(url: str, idx: int, total: int) -> bool:
-    """Worker function to process one URL."""
-    id_match = re.search(r"/article/(\d+)", url)
-    a_id = id_match.group(1) if id_match else f"item_{idx}"
+            # Date
+            date_el = soup.find(string=re.compile(r"ថ្ងៃ[^\n]+ខែ[^\n]+ឆ្នាំ"))
+            date_str = clean_khmer_text(date_el.strip()) if date_el else ""
 
-    print(f"[{idx}/{total}] Scraping: {url} ...")
-    article_data = fetch_single_article(url)
+            # Title
+            title = cleaned_body[:90]
+            if "។" in cleaned_body:
+                first_sent = cleaned_body.split("។")[0] + "។"
+                if 10 <= len(first_sent) <= 150:
+                    title = first_sent
+                else:
+                    title = cleaned_body[:90] + "..."
 
-    if "error" in article_data:
-        err = article_data["error"]
-        if "timed out" in err.lower() or "500" in err or "404" in err:
-            print(f"   [NOT FOUND] (ID: {a_id}) No article published at this ID (Skipped)")
-            log_error(a_id, "No article published at this ID on server")
-        else:
-            print(f"   [ERROR] (ID: {a_id}) Connection issue: {err}")
-            log_error(a_id, err)
-        mark_id_processed(a_id)
-        return False
+            if cleaned_body == title:
+                return {"skip": "Title identical to body (placeholder banner)"}
 
-    if not article_data.get("content") or len(article_data["content"]) < 20:
-        print(f"   [SKIP] (ID: {a_id}) Article content is empty or not found")
-        log_error(a_id, "Empty or too short content")
-        mark_id_processed(a_id)
-        return False
+            return {
+                "id": str(article_key),
+                "institution": INSTITUTION_NAME,
+                "category": "ពន្ធដារ និងហិរញ្ញវត្ថុ",
+                "title": title,
+                "date": date_str,
+                "url": article_url,
+                "text": cleaned_body
+            }
+        except Exception as e:
+            if attempt == 3:
+                return {"error": str(e)}
+            time.sleep(1.0)
 
-    save_article_result(article_data)
-    print(f"   [SUCCESS] (ID: {a_id}) Title: {article_data['title'][:55]}...")
-    print(f"      Details: {len(article_data['content'])} chars | Date: {article_data['date']}")
-    return True
-
-
+    return {"error": "Connection timed out"}
 
 # ==============================================================================
-# 7. MAIN CONTROLLER
+# 6. MAIN CONTROLLER
 # ==============================================================================
 
 def main():
     print("=" * 75)
-    print("KHMER LLM DATASET CRAWLER (100% PURE WEB SCRAPING)")
+    print("KHMER LLM DATASET CRAWLER - GDT (អគ្គនាយកដ្ឋានពន្ធដារ / ECONOMY)")
+    print("⚡ STRICT QUALITY FILTER: ONLY FULL-TEXT NEWS ARTICLES (PDF PLACEHOLDERS SKIPPED)")
     print("=" * 75)
 
-    processed_ids = load_processed_ids()
-    print(f"[CHECKPOINT] Previously processed articles: {len(processed_ids)}")
-
-    urls_to_crawl = []
-
-    # 1. Generate URLs to crawl based on START_ID and CRAWL_DIRECTION
-    dir_text = "downwards (-1)" if CRAWL_DIRECTION == "DOWN" else "upwards (+1)"
-    print(f"[CRAWLER] Starting crawl from ID {START_ID} {dir_text}...")
-    
-    current_id = START_ID
-    limit = MAX_ARTICLES if MAX_ARTICLES is not None else 1000000
-    
-    while len(urls_to_crawl) < limit and current_id > 0:
-        if str(current_id) not in processed_ids:
-            urls_to_crawl.append(f"{BASE_URL}/article/{current_id}")
-        
-        if CRAWL_DIRECTION == "DOWN":
-            current_id -= 1
-        else:
-            current_id += 1
-
-    print(f"[QUEUE] {len(urls_to_crawl)} articles queued for processing (Workers: {NUM_WORKERS})")
-    print(f"[OUTPUT] Files will be stored in: {EXTRACTED_DIR}/")
+    processed_keys = load_processed_keys()
+    print(f"[CHECKPOINT] Previously processed articles: {len(processed_keys)}")
+    print(f"[TARGET] Collecting up to {MAX_ARTICLES} articles starting from Page {START_PAGE}")
+    print(f"[OUTPUT] Destination file: {JSONL_OUTPUT_FILE}")
     print("-" * 75)
 
+    session = create_robust_session()
 
-    if not urls_to_crawl:
-        print("[INFO] No new articles to crawl (all items in queue already processed).")
-        return
-
-    success_count = 0
+    current_page = START_PAGE
+    total_saved = 0
     start_time = time.time()
-    total_urls = len(urls_to_crawl)
 
-    if NUM_WORKERS > 1:
-        # Multi-threaded concurrent crawling
-        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            futures = {
-                executor.submit(process_single_url, url, idx, total_urls): url
-                for idx, url in enumerate(urls_to_crawl, 1)
-            }
-            for future in as_completed(futures):
-                try:
-                    if future.result():
-                        success_count += 1
-                except Exception as e:
-                    print(f"   [ERROR] Worker failed: {e}")
-    else:
-        # Sequential single-threaded crawling
-        for idx, url in enumerate(urls_to_crawl, 1):
-            if process_single_url(url, idx, total_urls):
-                success_count += 1
+    while total_saved < MAX_ARTICLES and current_page <= MAX_PAGES:
+        print(f"\n⚡ [PAGE {current_page}] Requesting: {LIST_URL_PATTERN.format(page=current_page)} ...")
+
+        try:
+            keys = fetch_page_article_keys(session, current_page)
+            if not keys:
+                print(f"[DONE] No more articles available at page {current_page - 1}.")
+                break
+
+            unprocessed_keys = [k for k in keys if k not in processed_keys]
+            if not unprocessed_keys:
+                print(f"--> Page {current_page}: All {len(keys)} articles already processed.")
+                current_page += 1
+                continue
+
+            page_saved = 0
+            page_start = time.time()
+
+            # Concurrently fetch in pool preserving page order
+            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                results = list(executor.map(lambda k: (k, fetch_gdt_article(session, k)), unprocessed_keys))
+
+            for k, record in results:
+                if str(k) in processed_keys:
+                    continue
+                if "skip" in record:
+                    processed_keys.add(str(k))
+                    continue
+                if "error" in record:
+                    print(f"   [ERROR] (Key: {k}) {record['error']}")
+                    continue
+
+                save_single_record(record)
+                processed_keys.add(str(k))
+                page_saved += 1
+                total_saved += 1
+
+                print(f"   [SUCCESS] (Key: {record['id']}) Title: {record['title'][:48]}...")
+                print(f"      Details: {len(record['text'])} chars | Date: {record['date']}")
+
+                if total_saved >= MAX_ARTICLES:
+                    break
+
+            page_time = round(time.time() - page_start, 2)
+            print(f"--> Page {current_page} completed: {page_saved} new articles saved in {page_time}s (Total: {total_saved}/{MAX_ARTICLES})")
+
+            current_page += 1
             time.sleep(REQUEST_DELAY)
+
+        except Exception as e:
+            print(f"[ERROR] Error on page {current_page}: {e}")
+            time.sleep(2)
+            continue
 
     duration = round(time.time() - start_time, 2)
     print("\n" + "=" * 75)
-    print(f"[DONE] Crawl completed: {success_count}/{len(urls_to_crawl)} articles extracted ({duration}s)")
-    print(f"[OUTPUT] JSONL corpus dataset: {JSONL_OUTPUT_FILE}")
+    print(f"[DONE] Crawl completed: {total_saved} total articles extracted ({duration}s)")
+    print(f"[OUTPUT] JSONL dataset: {JSONL_OUTPUT_FILE}")
     print("=" * 75)
-
 
 if __name__ == "__main__":
     main()
