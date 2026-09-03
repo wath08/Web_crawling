@@ -4,7 +4,6 @@ import time
 import json
 import re
 import html
-import glob
 import unicodedata
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
@@ -20,14 +19,11 @@ LIST_URL_PATTERN = "https://mef.gov.kh/news/page/{page}/"
 # Start Page (1 = អត្ថបទថ្មីបំផុត ខែកញ្ញា ឆ្នាំ២០២៦)
 START_PAGE = 1
 
-# ⚡ ចំនួនទំព័រដែលត្រូវទាញយកក្នុង ១ ជុំ (1 Run = 50 Pages = ~500 អត្ថបទ)
+# ⚡ កំណត់ទាញយកម្ដង 50 ទំព័រក្នុង ១ ជុំ (1 Run = 50 Pages = ~500 អត្ថបទ)
 PAGES_PER_RUN = 50
 
 # ចំនួនទំព័រអតិបរមាសរុបលើ MEF (72 ទំព័រ)
 MAX_PAGES = 72
-
-# ចំនួនអត្ថបទអតិបរមា
-MAX_ARTICLES = 1000
 
 # រយៈពេលរង់ចាំរវាងអត្ថបទ (០.២ វិនាទី)
 REQUEST_DELAY = 0.2
@@ -183,7 +179,7 @@ def wait_for_cloudflare_settle(page, max_wait=15):
         try:
             t = page.title()
             if "Just a moment" not in t and "mef.gov.kh" not in t and "Security" not in t and "verification" not in t.lower():
-                time.sleep(1.0)
+                time.sleep(1.2)
                 return True
         except Exception:
             pass
@@ -196,7 +192,7 @@ def fetch_mef_article(page, article_url: str) -> dict:
         try:
             page.goto(article_url, wait_until="domcontentloaded", timeout=25000)
             wait_for_cloudflare_settle(page, max_wait=10)
-            time.sleep(0.8)
+            time.sleep(0.5)
 
             html_content = page.content()
             soup = BeautifulSoup(html_content, "html.parser")
@@ -265,41 +261,28 @@ def fetch_mef_article(page, article_url: str) -> dict:
 # 6. MAIN CONTROLLER (50 PAGES PER RUN)
 # ==============================================================================
 
-def cleanup_stale_locks(profile_dir: str):
-    """Safely cleans up stale lock files from previous runs."""
-    if os.path.exists(profile_dir):
-        for lock in glob.glob(os.path.join(profile_dir, "*Lock*")):
-            try:
-                os.remove(lock)
-            except Exception:
-                pass
-
 def main():
     end_page = min(START_PAGE + PAGES_PER_RUN - 1, MAX_PAGES)
     total_pages_in_batch = (end_page - START_PAGE) + 1
 
     print("=" * 75)
     print("KHMER LLM DATASET CRAWLER - MEF (ក្រសួងសេដ្ឋកិច្ច និងហិរញ្ញវត្ថុ / MINISTRIES)")
-    print(f"⚡ 1-RUN BATCH MODE: ទាញយក {total_pages_in_batch} ទំព័រក្នុង ១ ជុំ (ទំព័រ {START_PAGE} ដល់ {end_page})")
+    print(f"⚡ 50-PAGE BATCH MODE: ទាញយក {total_pages_in_batch} ទំព័រក្នុង ១ ជុំ (ទំព័រ {START_PAGE} ដល់ {end_page})")
     print("=" * 75)
 
     processed_urls = load_processed_urls()
     print(f"[CHECKPOINT] Previously processed articles: {len(processed_urls)}")
-    print(f"[TARGET] Collecting {total_pages_in_batch} Pages (Pages {START_PAGE} -> {end_page})")
+    print(f"[TARGET] Collecting {total_pages_in_batch} Full Pages (Pages {START_PAGE} -> {end_page})")
     print(f"[OUTPUT] Destination file: {JSONL_OUTPUT_FILE}")
     print("-" * 75)
 
-    user_data_dir = os.path.expanduser("~/.cache/playwright_mef_profile")
-    cleanup_stale_locks(user_data_dir)
-
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
+        browser = p.chromium.launch(
             channel="chrome",
             headless=False,
-            viewport={"width": 1000, "height": 700},
             args=["--disable-blink-features=AutomationControlled"]
         )
+        context = browser.new_context(viewport={"width": 1000, "height": 700})
         page = context.new_page()
 
         total_saved = 0
@@ -307,7 +290,7 @@ def main():
 
         for current_page in range(START_PAGE, end_page + 1):
             list_url = f"{BASE_URL}/news/" if current_page == 1 else LIST_URL_PATTERN.format(page=current_page)
-            print(f"\n⚡ [PAGE {current_page}/{end_page}] Requesting: {list_url} ...")
+            print(f"\n⚡ [PAGE {current_page}/{end_page}] Scanning: {list_url} ...")
 
             try:
                 page.goto(list_url, wait_until="domcontentloaded", timeout=25000)
@@ -324,7 +307,7 @@ def main():
                             article_links.append(h)
 
                 if not article_links:
-                    print(f"--> Page {current_page}: No new articles found or already crawled.")
+                    print(f"--> Page {current_page}: All articles already processed or none found.")
                     continue
 
                 print(f"   -> Found {len(article_links)} new articles on Page {current_page}. Downloading now...")
@@ -348,23 +331,17 @@ def main():
                     print(f"   [SUCCESS] Title: {record['title'][:48]}...")
                     print(f"      Details: {len(record['text'])} chars | Date: {record['date']}")
 
-                    if total_saved >= MAX_ARTICLES:
-                        break
-
                     time.sleep(REQUEST_DELAY)
 
                 page_time = round(time.time() - page_start, 2)
-                print(f"--> Page {current_page} completed: {page_saved} new articles saved in {page_time}s (Batch Total: {total_saved})")
-
-                if total_saved >= MAX_ARTICLES:
-                    break
+                print(f"--> Page {current_page}/{end_page} completed: {page_saved} new articles saved in {page_time}s (Batch Total: {total_saved})")
 
             except Exception as e:
                 print(f"[ERROR] Error on page {current_page}: {e}")
                 time.sleep(2)
                 continue
 
-        context.close()
+        browser.close()
 
     duration = round(time.time() - start_time, 2)
     print("\n" + "=" * 75)
