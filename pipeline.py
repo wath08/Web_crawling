@@ -20,14 +20,14 @@ LIST_URL_PATTERN = "https://mef.gov.kh/news/page/{page}/"
 # Start Page (1 = អត្ថបទថ្មីបំផុត ខែកញ្ញា ឆ្នាំ២០២៦)
 START_PAGE = 1
 
-# ⚡ កំណត់ទាញយកម្ដង 50 ទំព័រក្នុង ១ ជុំ (50 Pages = 500 អត្ថបទក្នុង ១ ជុំ)
+# ⚡ ចំនួនទំព័រដែលត្រូវទាញយកក្នុង ១ ជុំ (1 Run = 50 Pages = ~500 អត្ថបទ)
 PAGES_PER_RUN = 50
 
-# ចំនួនទំព័រអតិបរមា (72 ទំព័រ = ~720 អត្ថបទម៉ាក្រូសេដ្ឋកិច្ចលើ MEF)
+# ចំនួនទំព័រអតិបរមាសរុបលើ MEF (72 ទំព័រ)
 MAX_PAGES = 72
 
-# ចំនួនអត្ថបទដែលត្រូវប្រមូល (1000 អត្ថបទ គ្របដណ្ដប់គ្រប់អត្ថបទទាំងអស់)
-MAX_ARTICLES = 10
+# ចំនួនអត្ថបទអតិបរមា
+MAX_ARTICLES = 1000
 
 # រយៈពេលរង់ចាំរវាងអត្ថបទ (០.២ វិនាទី)
 REQUEST_DELAY = 0.2
@@ -174,15 +174,19 @@ def save_single_record(record: dict):
         f.write(f"{record['url']}\n")
 
 # ==============================================================================
-# 5. FETCHER ENGINE
+# 5. FETCHER ENGINE & CLOUDFLARE HANDLER
 # ==============================================================================
 
-def wait_for_cloudflare(page, max_wait=15):
-    """Waits until Cloudflare verification completes."""
+def wait_for_cloudflare_settle(page, max_wait=15):
+    """Waits for Cloudflare verification to complete and page to settle."""
     for _ in range(max_wait):
-        t = page.title()
-        if "Just a moment" not in t and "mef.gov.kh" not in t and "Security" not in t and "verification" not in t.lower():
-            return True
+        try:
+            t = page.title()
+            if "Just a moment" not in t and "mef.gov.kh" not in t and "Security" not in t and "verification" not in t.lower():
+                time.sleep(1.0)
+                return True
+        except Exception:
+            pass
         time.sleep(1.0)
     return False
 
@@ -191,8 +195,8 @@ def fetch_mef_article(page, article_url: str) -> dict:
     for attempt in range(1, 4):
         try:
             page.goto(article_url, wait_until="domcontentloaded", timeout=25000)
-            wait_for_cloudflare(page, max_wait=10)
-            time.sleep(1.0)
+            wait_for_cloudflare_settle(page, max_wait=10)
+            time.sleep(0.8)
 
             html_content = page.content()
             soup = BeautifulSoup(html_content, "html.parser")
@@ -258,7 +262,7 @@ def fetch_mef_article(page, article_url: str) -> dict:
     return {"error": "Connection timed out"}
 
 # ==============================================================================
-# 6. MAIN CONTROLLER
+# 6. MAIN CONTROLLER (50 PAGES PER RUN)
 # ==============================================================================
 
 def cleanup_stale_locks(profile_dir: str):
@@ -271,14 +275,17 @@ def cleanup_stale_locks(profile_dir: str):
                 pass
 
 def main():
+    end_page = min(START_PAGE + PAGES_PER_RUN - 1, MAX_PAGES)
+    total_pages_in_batch = (end_page - START_PAGE) + 1
+
     print("=" * 75)
     print("KHMER LLM DATASET CRAWLER - MEF (ក្រសួងសេដ្ឋកិច្ច និងហិរញ្ញវត្ថុ / MINISTRIES)")
-    print("⚡ DIRECT REAL-TIME STREAMING (UP TO 50 PAGES PER RUN)")
+    print(f"⚡ 1-RUN BATCH MODE: ទាញយក {total_pages_in_batch} ទំព័រក្នុង ១ ជុំ (ទំព័រ {START_PAGE} ដល់ {end_page})")
     print("=" * 75)
 
     processed_urls = load_processed_urls()
     print(f"[CHECKPOINT] Previously processed articles: {len(processed_urls)}")
-    print(f"[TARGET] Collecting up to {MAX_ARTICLES} articles starting from Page {START_PAGE}")
+    print(f"[TARGET] Collecting {total_pages_in_batch} Pages (Pages {START_PAGE} -> {end_page})")
     print(f"[OUTPUT] Destination file: {JSONL_OUTPUT_FILE}")
     print("-" * 75)
 
@@ -289,24 +296,22 @@ def main():
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             channel="chrome",
-            headless=True,
-            viewport={"width": 1280, "height": 800},
+            headless=False,
+            viewport={"width": 1000, "height": 700},
             args=["--disable-blink-features=AutomationControlled"]
         )
         page = context.new_page()
 
-        current_page = START_PAGE
         total_saved = 0
         start_time = time.time()
 
-        while total_saved < MAX_ARTICLES and current_page <= MAX_PAGES:
+        for current_page in range(START_PAGE, end_page + 1):
             list_url = f"{BASE_URL}/news/" if current_page == 1 else LIST_URL_PATTERN.format(page=current_page)
-            print(f"\n⚡ [PAGE {current_page}/{MAX_PAGES}] Requesting: {list_url} ...")
+            print(f"\n⚡ [PAGE {current_page}/{end_page}] Requesting: {list_url} ...")
 
             try:
                 page.goto(list_url, wait_until="domcontentloaded", timeout=25000)
-                wait_for_cloudflare(page, max_wait=12)
-                time.sleep(1.0)
+                wait_for_cloudflare_settle(page, max_wait=12)
 
                 soup_list = BeautifulSoup(page.content(), "html.parser")
                 article_links = []
@@ -319,8 +324,7 @@ def main():
                             article_links.append(h)
 
                 if not article_links:
-                    print(f"[DONE] No new articles found on page {current_page}.")
-                    current_page += 1
+                    print(f"--> Page {current_page}: No new articles found or already crawled.")
                     continue
 
                 print(f"   -> Found {len(article_links)} new articles on Page {current_page}. Downloading now...")
@@ -350,9 +354,10 @@ def main():
                     time.sleep(REQUEST_DELAY)
 
                 page_time = round(time.time() - page_start, 2)
-                print(f"--> Page {current_page} completed: {page_saved} new articles saved in {page_time}s (Total: {total_saved}/{MAX_ARTICLES})")
+                print(f"--> Page {current_page} completed: {page_saved} new articles saved in {page_time}s (Batch Total: {total_saved})")
 
-                current_page += 1
+                if total_saved >= MAX_ARTICLES:
+                    break
 
             except Exception as e:
                 print(f"[ERROR] Error on page {current_page}: {e}")
@@ -363,7 +368,7 @@ def main():
 
     duration = round(time.time() - start_time, 2)
     print("\n" + "=" * 75)
-    print(f"[DONE] Crawl completed: {total_saved} total articles extracted ({duration}s)")
+    print(f"[DONE] Crawl completed: {total_saved} total articles extracted across {total_pages_in_batch} pages ({duration}s)")
     print(f"[OUTPUT] JSONL dataset: {JSONL_OUTPUT_FILE}")
     print("=" * 75)
 
